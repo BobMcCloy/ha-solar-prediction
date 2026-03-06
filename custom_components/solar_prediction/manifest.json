@@ -6,7 +6,7 @@
   "codeowners": ["@code-chicken"],
   "config_flow": true,
   "iot_class": "cloud_polling",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "requirements": [],
   "dependencies": [],
   "logo": "/local/community/solar_prediction/logo.png"
