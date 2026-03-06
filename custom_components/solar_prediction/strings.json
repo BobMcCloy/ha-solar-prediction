@@ -24,11 +24,15 @@
         "name": "API Status"
       },
       "today_total": {
-        "name": "Today Total"
+        "name": "Prognose Heute"
       },
       "tomorrow_total": {
-        "name": "Tomorrow Total"
+        "name": "Prognose Morgen"
+      },
+      "current_hour": {
+        "name": "Prognose Aktuelle Stunde"
       }
     }
   }
 }
+```
