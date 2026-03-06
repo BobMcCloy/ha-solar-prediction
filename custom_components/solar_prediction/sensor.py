@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 import logging
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -31,7 +31,7 @@ async def async_setup_entry(
     """Set up the sensor platform."""
     coordinator = entry.runtime_data
 
-    # Wir definieren hier die festen Sensoren
+    # Wir definieren hier die vier zentralen Sensoren
     sensors_to_add: list[SensorEntity] = [
         SolarPredictionDailyTotalSensor(coordinator, "today"),
         SolarPredictionDailyTotalSensor(coordinator, "tomorrow"),
@@ -58,7 +58,6 @@ class SolarPredictionStatusSensor(
             "name": f"Solar Prediction ({coordinator.project})",
             "manufacturer": "solarprognose.de",
             "model": "Cloud API",
-            "entry_type": "service",
         }
 
     @property
@@ -87,15 +86,17 @@ class SolarPredictionDailyTotalSensor(
         super().__init__(coordinator)
         self._day = day
         self._attr_unique_id = f"{coordinator.project}_{day}_total"
-        self._attr_name = f"Solar Forecast {day.capitalize()}"
+        self._attr_translation_key = f"{day}_total"
         self._attr_device_info = {
             "identifiers": {(DOMAIN, coordinator.project)},
             "name": f"Solar Prediction ({coordinator.project})",
+            "manufacturer": "solarprognose.de",
+            "model": "Cloud API",
         }
 
     @property
     def native_value(self) -> float | None:
-        """Calculate the total kWh for the specific day."""
+        """Calculate the total kWh for the specific day cleanly."""
         forecast_data = self.coordinator.data.get("data") if self.coordinator.data else None
         if not forecast_data:
             return None
@@ -103,19 +104,33 @@ class SolarPredictionDailyTotalSensor(
         today = dt_util.now().date()
         target_date = today if self._day == "today" else today + timedelta(days=1)
         
-        day_values = []
-        for ts_str, values in forecast_data.items():
-            dt = dt_util.as_local(dt_util.utc_from_timestamp(int(ts_str)))
-            if dt.date() == target_date:
-                # Solarprognose API: [timestamp, power_kw, cumulative_kwh]
-                val = values[2] if len(values) > 2 else values[1]
-                day_values.append(float(val))
+        sorted_ts = sorted(forecast_data.keys(), key=int)
+        daily_total = 0.0
         
-        return round(max(day_values), 3) if day_values else 0.0
+        for i, ts_str in enumerate(sorted_ts):
+            ts_int = int(ts_str)
+            dt = dt_util.as_local(dt_util.utc_from_timestamp(ts_int))
+            
+            # Wir berechnen die Differenz für jeden Datenpunkt exakt
+            if dt.date() == target_date:
+                curr_vals = forecast_data[ts_str]
+                # Index 2 ist der kumulative Wert der coordinator.py
+                curr_cum = float(curr_vals[2] if len(curr_vals) > 2 else curr_vals[1])
+                
+                prev_cum = 0.0
+                if i > 0:
+                    prev_vals = forecast_data[sorted_ts[i-1]]
+                    prev_cum = float(prev_vals[2] if len(prev_vals) > 2 else prev_vals[1])
+                
+                # Stundenwert ist die Differenz zwischen dem aktuellen und vorherigen Zählerstand
+                hourly_energy = max(0.0, curr_cum - prev_cum)
+                daily_total += hourly_energy
+        
+        return round(daily_total, 3)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
-        """Return hourly forecast as a list for easy charting."""
+        """Return hourly forecast as a list of objects for easy charting."""
         forecast_data = self.coordinator.data.get("data") if self.coordinator.data else None
         if not forecast_data:
             return None
@@ -124,7 +139,6 @@ class SolarPredictionDailyTotalSensor(
         target_date = today if self._day == "today" else today + timedelta(days=1)
         
         chart_data = []
-        # Sort timestamps to calculate deltas correctly
         sorted_ts = sorted(forecast_data.keys(), key=int)
         
         for i, ts_str in enumerate(sorted_ts):
@@ -132,23 +146,21 @@ class SolarPredictionDailyTotalSensor(
             dt = dt_util.as_local(dt_util.utc_from_timestamp(ts_int))
             
             if dt.date() == target_date:
-                current_vals = forecast_data[ts_str]
-                curr_cum = float(current_vals[2] if len(current_vals) > 2 else current_vals[1])
+                curr_vals = forecast_data[ts_str]
+                curr_power = float(curr_vals[1])
+                curr_cum = float(curr_vals[2] if len(curr_vals) > 2 else curr_vals[1])
                 
-                # Calculate hourly delta
                 prev_cum = 0.0
                 if i > 0:
                     prev_vals = forecast_data[sorted_ts[i-1]]
                     prev_cum = float(prev_vals[2] if len(prev_vals) > 2 else prev_vals[1])
-                    # Reset if it's the first hour of a new day or cumulative drops
-                    if dt.hour == 0 or curr_cum < prev_cum:
-                        prev_cum = 0.0
+                
+                hourly_energy = max(0.0, curr_cum - prev_cum)
                 
                 chart_data.append({
                     "datetime": dt.isoformat(),
-                    "hour": dt.hour,
-                    "power_kw": round(float(current_vals[1]), 3),
-                    "energy_kwh": round(curr_cum - prev_cum, 3)
+                    "power_kw": round(curr_power, 3),
+                    "energy_kwh": round(hourly_energy, 3)
                 })
 
         return {"forecast": chart_data}
@@ -167,21 +179,22 @@ class SolarPredictionCurrentHourSensor(
     def __init__(self, coordinator: SolarPredictionDataUpdateCoordinator):
         super().__init__(coordinator)
         self._attr_unique_id = f"{coordinator.project}_current_hour"
-        self._attr_name = "Solar Forecast Current Hour"
+        self._attr_translation_key = "current_hour"
         self._attr_device_info = {
             "identifiers": {(DOMAIN, coordinator.project)},
             "name": f"Solar Prediction ({coordinator.project})",
+            "manufacturer": "solarprognose.de",
+            "model": "Cloud API",
         }
 
     @property
     def native_value(self) -> float | None:
-        """Get the power value for the current hour."""
+        """Get the predicted power value for the current hour."""
         forecast_data = self.coordinator.data.get("data") if self.coordinator.data else None
         if not forecast_data:
             return None
 
         now = dt_util.now()
-        # Find the entry that matches the current hour
         for ts_str, values in forecast_data.items():
             dt = dt_util.as_local(dt_util.utc_from_timestamp(int(ts_str)))
             if dt.date() == now.date() and dt.hour == now.hour:
