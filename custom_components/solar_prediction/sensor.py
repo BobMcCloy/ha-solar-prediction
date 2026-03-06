@@ -10,7 +10,7 @@ from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorStateClass,
 )
-from homeassistant.const import UnitOfEnergy
+from homeassistant.const import UnitOfEnergy, UnitOfPower
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -31,10 +31,11 @@ async def async_setup_entry(
     """Set up the sensor platform."""
     coordinator = entry.runtime_data
 
-    # Erstelle nur noch die drei Hauptsensoren
+    # Wir definieren hier die festen Sensoren
     sensors_to_add: list[SensorEntity] = [
         SolarPredictionDailyTotalSensor(coordinator, "today"),
         SolarPredictionDailyTotalSensor(coordinator, "tomorrow"),
+        SolarPredictionCurrentHourSensor(coordinator),
         SolarPredictionStatusSensor(coordinator),
     ]
 
@@ -47,7 +48,6 @@ class SolarPredictionStatusSensor(
     """Represents a sensor for the API status."""
 
     _attr_has_entity_name = True
-    _attr_entity_registry_enabled_default = True
 
     def __init__(self, coordinator: SolarPredictionDataUpdateCoordinator):
         super().__init__(coordinator)
@@ -69,19 +69,13 @@ class SolarPredictionStatusSensor(
 
     @property
     def icon(self) -> str:
-        return (
-            "mdi:cloud-alert" if self.coordinator.last_api_error else "mdi:cloud-check"
-        )
-
-    @property
-    def available(self) -> bool:
-        return True
+        return "mdi:cloud-alert" if self.coordinator.last_api_error else "mdi:cloud-check"
 
 
 class SolarPredictionDailyTotalSensor(
     CoordinatorEntity[SolarPredictionDataUpdateCoordinator], SensorEntity
 ):
-    """Represents a sensor for total daily solar prediction."""
+    """Sensor for total daily solar prediction (Today/Tomorrow)."""
 
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_state_class = SensorStateClass.TOTAL
@@ -93,103 +87,104 @@ class SolarPredictionDailyTotalSensor(
         super().__init__(coordinator)
         self._day = day
         self._attr_unique_id = f"{coordinator.project}_{day}_total"
-        self._attr_translation_key = f"{day}_total"
+        self._attr_name = f"Solar Forecast {day.capitalize()}"
         self._attr_device_info = {
             "identifiers": {(DOMAIN, coordinator.project)},
             "name": f"Solar Prediction ({coordinator.project})",
-            "manufacturer": "solarprognose.de",
-            "model": "Cloud API",
-            "entry_type": "service",
         }
 
     @property
     def native_value(self) -> float | None:
-        """Find the last cumulative kWh value of the day."""
-        forecast_data = self.coordinator.data and self.coordinator.data.get("data")
+        """Calculate the total kWh for the specific day."""
+        forecast_data = self.coordinator.data.get("data") if self.coordinator.data else None
         if not forecast_data:
             return None
-        try:
-            hass_tz = dt_util.get_time_zone(self.hass.config.time_zone)
-            today_in_tz = dt_util.now(hass_tz).date()
-            target_date = (
-                today_in_tz if self._day == "today" else today_in_tz + timedelta(days=1)
-            )
 
-            last_timestamp = 0
-            for ts_str in forecast_data.keys():
-                ts = int(ts_str)
-                timestamp_dt = dt_util.as_local(dt_util.utc_from_timestamp(ts))
-                if timestamp_dt.date() == target_date and ts > last_timestamp:
-                    last_timestamp = ts
-
-            if last_timestamp > 0:
-                values = forecast_data[str(last_timestamp)]
-                if len(values) > 2:
-                    final_value = values[2]
-                else:
-                    final_value = values[1]
-                return round(float(final_value), 3)
-            return 0.0
-        except (ValueError, KeyError, IndexError) as e:
-            _LOGGER.error("Error calculating daily total for %s: %s", self.name, e)
-            return None
-
-    @property
-    def available(self) -> bool:
-        return self.coordinator.last_update_success or self.coordinator.data is not None
+        today = dt_util.now().date()
+        target_date = today if self._day == "today" else today + timedelta(days=1)
+        
+        day_values = []
+        for ts_str, values in forecast_data.items():
+            dt = dt_util.as_local(dt_util.utc_from_timestamp(int(ts_str)))
+            if dt.date() == target_date:
+                # Solarprognose API: [timestamp, power_kw, cumulative_kwh]
+                val = values[2] if len(values) > 2 else values[1]
+                day_values.append(float(val))
+        
+        return round(max(day_values), 3) if day_values else 0.0
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
-        """Filters attributes per day AND calculates the hourly delta value."""
-        forecast_data = self.coordinator.data and self.coordinator.data.get("data")
+        """Return hourly forecast as a list for easy charting."""
+        forecast_data = self.coordinator.data.get("data") if self.coordinator.data else None
         if not forecast_data:
             return None
-        try:
-            hass_tz = dt_util.get_time_zone(self.hass.config.time_zone)
-            today_in_tz = dt_util.now(hass_tz).date()
-            target_date = (
-                today_in_tz if self._day == "today" else today_in_tz + timedelta(days=1)
-            )
 
-            daily_timestamps = sorted(
-                [
-                    ts_str
-                    for ts_str in forecast_data
-                    if dt_util.as_local(dt_util.utc_from_timestamp(int(ts_str))).date()
-                    == target_date
-                ],
-                key=int,
-            )
+        today = dt_util.now().date()
+        target_date = today if self._day == "today" else today + timedelta(days=1)
+        
+        chart_data = []
+        # Sort timestamps to calculate deltas correctly
+        sorted_ts = sorted(forecast_data.keys(), key=int)
+        
+        for i, ts_str in enumerate(sorted_ts):
+            ts_int = int(ts_str)
+            dt = dt_util.as_local(dt_util.utc_from_timestamp(ts_int))
+            
+            if dt.date() == target_date:
+                current_vals = forecast_data[ts_str]
+                curr_cum = float(current_vals[2] if len(current_vals) > 2 else current_vals[1])
+                
+                # Calculate hourly delta
+                prev_cum = 0.0
+                if i > 0:
+                    prev_vals = forecast_data[sorted_ts[i-1]]
+                    prev_cum = float(prev_vals[2] if len(prev_vals) > 2 else prev_vals[1])
+                    # Reset if it's the first hour of a new day or cumulative drops
+                    if dt.hour == 0 or curr_cum < prev_cum:
+                        prev_cum = 0.0
+                
+                chart_data.append({
+                    "datetime": dt.isoformat(),
+                    "hour": dt.hour,
+                    "power_kw": round(float(current_vals[1]), 3),
+                    "energy_kwh": round(curr_cum - prev_cum, 3)
+                })
 
-            if not daily_timestamps:
-                return None
+        return {"forecast": chart_data}
 
-            daily_forecast_transformed = {}
-            first_ts_of_day = int(daily_timestamps[0])
-            ts_before_first = str(first_ts_of_day - 3600)
-            previous_cumulative_kwh = 0.0
-            if ts_before_first in forecast_data:
-                prev_values = forecast_data[ts_before_first]
-                previous_cumulative_kwh = float(
-                    prev_values[2] if len(prev_values) > 2 else prev_values[1]
-                )
 
-            for ts_str in daily_timestamps:
-                values = forecast_data[ts_str]
-                current_cumulative_kwh = float(
-                    values[2] if len(values) > 2 else values[1]
-                )
+class SolarPredictionCurrentHourSensor(
+    CoordinatorEntity[SolarPredictionDataUpdateCoordinator], SensorEntity
+):
+    """Sensor for the predicted solar power in the current hour."""
 
-                hourly_kwh = current_cumulative_kwh - previous_cumulative_kwh
-                if hourly_kwh < 0:
-                    hourly_kwh = current_cumulative_kwh
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_native_unit_of_measurement = UnitOfPower.KILO_WATT
+    _attr_icon = "mdi:sun-clock"
+    _attr_has_entity_name = True
 
-                daily_forecast_transformed[ts_str] = {
-                    "power_kw": round(float(values[1]), 3),
-                    "hourly_kwh": round(hourly_kwh, 3),
-                }
-                previous_cumulative_kwh = current_cumulative_kwh
-            return {"hourly_forecast": daily_forecast_transformed}
-        except (ValueError, KeyError, IndexError) as e:
-            _LOGGER.error("Error calculating daily attributes for %s: %s", self.name, e)
+    def __init__(self, coordinator: SolarPredictionDataUpdateCoordinator):
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.project}_current_hour"
+        self._attr_name = "Solar Forecast Current Hour"
+        self._attr_device_info = {
+            "identifiers": {(DOMAIN, coordinator.project)},
+            "name": f"Solar Prediction ({coordinator.project})",
+        }
+
+    @property
+    def native_value(self) -> float | None:
+        """Get the power value for the current hour."""
+        forecast_data = self.coordinator.data.get("data") if self.coordinator.data else None
+        if not forecast_data:
             return None
+
+        now = dt_util.now()
+        # Find the entry that matches the current hour
+        for ts_str, values in forecast_data.items():
+            dt = dt_util.as_local(dt_util.utc_from_timestamp(int(ts_str)))
+            if dt.date() == now.date() and dt.hour == now.hour:
+                return round(float(values[1]), 3)
+        
+        return 0.0
