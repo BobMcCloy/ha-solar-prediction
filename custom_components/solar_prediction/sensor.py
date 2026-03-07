@@ -31,11 +31,13 @@ async def async_setup_entry(
     """Set up the sensor platform."""
     coordinator = entry.runtime_data
 
-    # Wir definieren hier die vier zentralen Sensoren
+    # Wir definieren hier die zentralen Sensoren (jetzt 6 Stück)
     sensors_to_add: list[SensorEntity] = [
         SolarPredictionDailyTotalSensor(coordinator, "today"),
         SolarPredictionDailyTotalSensor(coordinator, "tomorrow"),
+        SolarPredictionRemainingTodaySensor(coordinator),
         SolarPredictionCurrentHourSensor(coordinator),
+        SolarPredictionNextHourSensor(coordinator),
         SolarPredictionStatusSensor(coordinator),
     ]
 
@@ -166,6 +168,64 @@ class SolarPredictionDailyTotalSensor(
         return {"forecast": chart_data}
 
 
+class SolarPredictionRemainingTodaySensor(
+    CoordinatorEntity[SolarPredictionDataUpdateCoordinator], SensorEntity
+):
+    """Sensor for the remaining expected energy for today."""
+
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_icon = "mdi:solar-power-variant"
+    _attr_has_entity_name = True
+
+    def __init__(self, coordinator: SolarPredictionDataUpdateCoordinator):
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.project}_today_remaining"
+        self._attr_translation_key = "today_remaining"
+        self._attr_device_info = {
+            "identifiers": {(DOMAIN, coordinator.project)},
+            "name": f"Solar Prediction ({coordinator.project})",
+            "manufacturer": "solarprognose.de",
+            "model": "Cloud API",
+        }
+
+    @property
+    def native_value(self) -> float | None:
+        """Calculate the remaining kWh for today (from current hour onwards)."""
+        forecast_data = self.coordinator.data.get("data") if self.coordinator.data else None
+        if not forecast_data:
+            return None
+
+        now = dt_util.now()
+        target_date = now.date()
+        
+        sorted_ts = sorted(forecast_data.keys(), key=int)
+        remaining_total = 0.0
+        
+        for i, ts_str in enumerate(sorted_ts):
+            ts_int = int(ts_str)
+            dt = dt_util.as_local(dt_util.utc_from_timestamp(ts_int))
+            
+            # Wir berechnen die Energie nur für den heutigen Tag
+            if dt.date() == target_date:
+                curr_vals = forecast_data[ts_str]
+                curr_cum = float(curr_vals[2] if len(curr_vals) > 2 else curr_vals[1])
+                
+                prev_cum = 0.0
+                if i > 0:
+                    prev_vals = forecast_data[sorted_ts[i-1]]
+                    prev_cum = float(prev_vals[2] if len(prev_vals) > 2 else prev_vals[1])
+                
+                hourly_energy = max(0.0, curr_cum - prev_cum)
+                
+                # Wir addieren nur, wenn die Stunde in der Zukunft liegt oder es die aktuelle Stunde ist
+                if dt.hour >= now.hour:
+                    remaining_total += hourly_energy
+        
+        return round(remaining_total, 3)
+
+
 class SolarPredictionCurrentHourSensor(
     CoordinatorEntity[SolarPredictionDataUpdateCoordinator], SensorEntity
 ):
@@ -198,6 +258,44 @@ class SolarPredictionCurrentHourSensor(
         for ts_str, values in forecast_data.items():
             dt = dt_util.as_local(dt_util.utc_from_timestamp(int(ts_str)))
             if dt.date() == now.date() and dt.hour == now.hour:
+                return round(float(values[1]), 3)
+        
+        return 0.0
+
+
+class SolarPredictionNextHourSensor(
+    CoordinatorEntity[SolarPredictionDataUpdateCoordinator], SensorEntity
+):
+    """Sensor for the predicted solar power in the next hour."""
+
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_native_unit_of_measurement = UnitOfPower.KILO_WATT
+    _attr_icon = "mdi:sun-clock-outline"
+    _attr_has_entity_name = True
+
+    def __init__(self, coordinator: SolarPredictionDataUpdateCoordinator):
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.project}_next_hour"
+        self._attr_translation_key = "next_hour"
+        self._attr_device_info = {
+            "identifiers": {(DOMAIN, coordinator.project)},
+            "name": f"Solar Prediction ({coordinator.project})",
+            "manufacturer": "solarprognose.de",
+            "model": "Cloud API",
+        }
+
+    @property
+    def native_value(self) -> float | None:
+        """Get the predicted power value for the next hour."""
+        forecast_data = self.coordinator.data.get("data") if self.coordinator.data else None
+        if not forecast_data:
+            return None
+
+        # Wir nehmen die aktuelle Zeit plus 1 Stunde
+        next_hour_dt = dt_util.now() + timedelta(hours=1)
+        for ts_str, values in forecast_data.items():
+            dt = dt_util.as_local(dt_util.utc_from_timestamp(int(ts_str)))
+            if dt.date() == next_hour_dt.date() and dt.hour == next_hour_dt.hour:
                 return round(float(values[1]), 3)
         
         return 0.0
