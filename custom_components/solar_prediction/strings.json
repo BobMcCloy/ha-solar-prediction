@@ -31,8 +31,13 @@
       },
       "current_hour": {
         "name": "Prognose Aktuelle Stunde"
+      },
+      "next_hour": {
+        "name": "Prognose Nächste Stunde"
+      },
+      "today_remaining": {
+        "name": "Prognose Rest Heute"
       }
     }
   }
 }
-```
