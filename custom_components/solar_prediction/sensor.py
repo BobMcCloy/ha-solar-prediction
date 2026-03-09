@@ -31,10 +31,11 @@ async def async_setup_entry(
     """Set up the sensor platform."""
     coordinator = entry.runtime_data
 
-    # Wir definieren hier die zentralen Sensoren (jetzt 6 Stück)
+    # Wir definieren hier die zentralen Sensoren (jetzt 7 Stück)
     sensors_to_add: list[SensorEntity] = [
         SolarPredictionDailyTotalSensor(coordinator, "today"),
         SolarPredictionDailyTotalSensor(coordinator, "tomorrow"),
+        SolarPredictionDailyTotalSensor(coordinator, "day_after_tomorrow"),
         SolarPredictionRemainingTodaySensor(coordinator),
         SolarPredictionCurrentHourSensor(coordinator),
         SolarPredictionNextHourSensor(coordinator),
@@ -104,7 +105,14 @@ class SolarPredictionDailyTotalSensor(
             return None
 
         today = dt_util.now().date()
-        target_date = today if self._day == "today" else today + timedelta(days=1)
+        if self._day == "today":
+            target_date = today
+        elif self._day == "tomorrow":
+            target_date = today + timedelta(days=1)
+        elif self._day == "day_after_tomorrow":
+            target_date = today + timedelta(days=2)
+        else:
+            target_date = today
         
         sorted_ts = sorted(forecast_data.keys(), key=int)
         daily_total = 0.0
@@ -138,7 +146,14 @@ class SolarPredictionDailyTotalSensor(
             return None
 
         today = dt_util.now().date()
-        target_date = today if self._day == "today" else today + timedelta(days=1)
+        if self._day == "today":
+            target_date = today
+        elif self._day == "tomorrow":
+            target_date = today + timedelta(days=1)
+        elif self._day == "day_after_tomorrow":
+            target_date = today + timedelta(days=2)
+        else:
+            target_date = today
         
         chart_data = []
         sorted_ts = sorted(forecast_data.keys(), key=int)
