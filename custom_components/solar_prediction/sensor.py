@@ -31,7 +31,7 @@ async def async_setup_entry(
     """Set up the sensor platform."""
     coordinator = entry.runtime_data
 
-    # Wir definieren hier die zentralen Sensoren (jetzt 7 Stück)
+    # Wir definieren hier alle 7 Sensoren
     sensors_to_add: list[SensorEntity] = [
         SolarPredictionDailyTotalSensor(coordinator, "today"),
         SolarPredictionDailyTotalSensor(coordinator, "tomorrow"),
@@ -55,7 +55,7 @@ class SolarPredictionStatusSensor(
     def __init__(self, coordinator: SolarPredictionDataUpdateCoordinator):
         super().__init__(coordinator)
         self._attr_unique_id = f"{coordinator.project}_status"
-        self._attr_translation_key = "api_status"
+        self._attr_name = "API Status"  # Fester Name statt Translation-Key
         self._attr_device_info = {
             "identifiers": {(DOMAIN, coordinator.project)},
             "name": f"Solar Prediction ({coordinator.project})",
@@ -77,7 +77,7 @@ class SolarPredictionStatusSensor(
 class SolarPredictionDailyTotalSensor(
     CoordinatorEntity[SolarPredictionDataUpdateCoordinator], SensorEntity
 ):
-    """Sensor for total daily solar prediction (Today/Tomorrow)."""
+    """Sensor for total daily solar prediction (Today/Tomorrow/Day After)."""
 
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_state_class = SensorStateClass.TOTAL
@@ -89,7 +89,17 @@ class SolarPredictionDailyTotalSensor(
         super().__init__(coordinator)
         self._day = day
         self._attr_unique_id = f"{coordinator.project}_{day}_total"
-        self._attr_translation_key = f"{day}_total"
+        
+        # Feste Namen zuweisen, damit HA "Energie" überschreibt
+        if day == "today":
+            self._attr_name = "Prognose Heute"
+        elif day == "tomorrow":
+            self._attr_name = "Prognose Morgen"
+        elif day == "day_after_tomorrow":
+            self._attr_name = "Prognose Übermorgen"
+        else:
+            self._attr_name = f"Prognose {day}"
+            
         self._attr_device_info = {
             "identifiers": {(DOMAIN, coordinator.project)},
             "name": f"Solar Prediction ({coordinator.project})",
@@ -121,10 +131,8 @@ class SolarPredictionDailyTotalSensor(
             ts_int = int(ts_str)
             dt = dt_util.as_local(dt_util.utc_from_timestamp(ts_int))
             
-            # Wir berechnen die Differenz für jeden Datenpunkt exakt
             if dt.date() == target_date:
                 curr_vals = forecast_data[ts_str]
-                # Index 2 ist der kumulative Wert der coordinator.py
                 curr_cum = float(curr_vals[2] if len(curr_vals) > 2 else curr_vals[1])
                 
                 prev_cum = 0.0
@@ -132,7 +140,6 @@ class SolarPredictionDailyTotalSensor(
                     prev_vals = forecast_data[sorted_ts[i-1]]
                     prev_cum = float(prev_vals[2] if len(prev_vals) > 2 else prev_vals[1])
                 
-                # Stundenwert ist die Differenz zwischen dem aktuellen und vorherigen Zählerstand
                 hourly_energy = max(0.0, curr_cum - prev_cum)
                 daily_total += hourly_energy
         
@@ -197,7 +204,7 @@ class SolarPredictionRemainingTodaySensor(
     def __init__(self, coordinator: SolarPredictionDataUpdateCoordinator):
         super().__init__(coordinator)
         self._attr_unique_id = f"{coordinator.project}_today_remaining"
-        self._attr_translation_key = "today_remaining"
+        self._attr_name = "Prognose Rest Heute" # Fester Name
         self._attr_device_info = {
             "identifiers": {(DOMAIN, coordinator.project)},
             "name": f"Solar Prediction ({coordinator.project})",
@@ -222,7 +229,6 @@ class SolarPredictionRemainingTodaySensor(
             ts_int = int(ts_str)
             dt = dt_util.as_local(dt_util.utc_from_timestamp(ts_int))
             
-            # Wir berechnen die Energie nur für den heutigen Tag
             if dt.date() == target_date:
                 curr_vals = forecast_data[ts_str]
                 curr_cum = float(curr_vals[2] if len(curr_vals) > 2 else curr_vals[1])
@@ -234,7 +240,6 @@ class SolarPredictionRemainingTodaySensor(
                 
                 hourly_energy = max(0.0, curr_cum - prev_cum)
                 
-                # Wir addieren nur, wenn die Stunde in der Zukunft liegt oder es die aktuelle Stunde ist
                 if dt.hour >= now.hour:
                     remaining_total += hourly_energy
         
@@ -254,7 +259,7 @@ class SolarPredictionCurrentHourSensor(
     def __init__(self, coordinator: SolarPredictionDataUpdateCoordinator):
         super().__init__(coordinator)
         self._attr_unique_id = f"{coordinator.project}_current_hour"
-        self._attr_translation_key = "current_hour"
+        self._attr_name = "Prognose Aktuelle Stunde" # Fester Name
         self._attr_device_info = {
             "identifiers": {(DOMAIN, coordinator.project)},
             "name": f"Solar Prediction ({coordinator.project})",
@@ -291,7 +296,7 @@ class SolarPredictionNextHourSensor(
     def __init__(self, coordinator: SolarPredictionDataUpdateCoordinator):
         super().__init__(coordinator)
         self._attr_unique_id = f"{coordinator.project}_next_hour"
-        self._attr_translation_key = "next_hour"
+        self._attr_name = "Prognose Nächste Stunde" # Fester Name
         self._attr_device_info = {
             "identifiers": {(DOMAIN, coordinator.project)},
             "name": f"Solar Prediction ({coordinator.project})",
@@ -306,7 +311,6 @@ class SolarPredictionNextHourSensor(
         if not forecast_data:
             return None
 
-        # Wir nehmen die aktuelle Zeit plus 1 Stunde
         next_hour_dt = dt_util.now() + timedelta(hours=1)
         for ts_str, values in forecast_data.items():
             dt = dt_util.as_local(dt_util.utc_from_timestamp(int(ts_str)))
