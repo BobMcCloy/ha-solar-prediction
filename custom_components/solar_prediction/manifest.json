@@ -6,7 +6,7 @@
   "codeowners": ["@BobMcCloy"],
   "config_flow": true,
   "iot_class": "cloud_polling",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "requirements": [],
   "dependencies": [],
   "logo": "/local/community/solar_prediction/logo.png"
